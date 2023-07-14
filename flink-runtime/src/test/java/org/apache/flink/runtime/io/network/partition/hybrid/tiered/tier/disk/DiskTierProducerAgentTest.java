@@ -18,14 +18,16 @@
 
 package org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.disk;
 
+import org.apache.flink.runtime.concurrent.ManuallyTriggeredScheduledExecutorService;
+import org.apache.flink.runtime.io.disk.BatchShuffleReadBufferPool;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.TestingTieredStorageMemoryManager;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageIdMappingUtils;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStoragePartitionId;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageSubpartitionId;
-import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageUtils;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.PartitionFileWriter;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.TestingPartitionFileReader;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.TestingPartitionFileWriter;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty.TestingNettyServiceProducer;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty.TestingTieredStorageNettyService;
@@ -38,8 +40,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.ProducerMergedPartitionFile.DATA_FILE_SUFFIX;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -62,7 +66,7 @@ public class DiskTierProducerAgentTest {
     @Test
     void testStartNewSegmentSuccess() throws IOException {
         String partitionFile = TempDirUtils.newFile(tempFolder, "test").toString();
-        File testFile = new File(partitionFile + TieredStorageUtils.DATA_FILE_SUFFIX);
+        File testFile = new File(partitionFile + DATA_FILE_SUFFIX);
         assertThat(testFile.createNewFile()).isTrue();
         try (DiskTierProducerAgent diskTierProducerAgent =
                 createDiskTierProducerAgent(
@@ -103,7 +107,9 @@ public class DiskTierProducerAgentTest {
             diskTierProducerAgent.tryStartNewSegment(SUBPARTITION_ID, 0);
             assertThat(
                             diskTierProducerAgent.tryWrite(
-                                    SUBPARTITION_ID, BufferBuilderTestUtils.buildSomeBuffer()))
+                                    SUBPARTITION_ID,
+                                    BufferBuilderTestUtils.buildSomeBuffer(),
+                                    this))
                     .isTrue();
         }
     }
@@ -121,12 +127,15 @@ public class DiskTierProducerAgentTest {
             diskTierProducerAgent.tryStartNewSegment(SUBPARTITION_ID, 0);
             assertThat(
                             diskTierProducerAgent.tryWrite(
-                                    SUBPARTITION_ID, BufferBuilderTestUtils.buildSomeBuffer()))
+                                    SUBPARTITION_ID,
+                                    BufferBuilderTestUtils.buildSomeBuffer(),
+                                    this))
                     .isTrue();
             assertThat(
                             diskTierProducerAgent.tryWrite(
                                     SUBPARTITION_ID,
-                                    BufferBuilderTestUtils.buildSomeBuffer(BUFFER_SIZE_BYTES)))
+                                    BufferBuilderTestUtils.buildSomeBuffer(BUFFER_SIZE_BYTES),
+                                    this))
                     .isFalse();
         }
     }
@@ -146,11 +155,14 @@ public class DiskTierProducerAgentTest {
                             () ->
                                     diskTierProducerAgent.tryWrite(
                                             new TieredStorageSubpartitionId(1),
-                                            BufferBuilderTestUtils.buildSomeBuffer()))
+                                            BufferBuilderTestUtils.buildSomeBuffer(),
+                                            this))
                     .isInstanceOf(ArrayIndexOutOfBoundsException.class);
             assertThat(
                             diskTierProducerAgent.tryWrite(
-                                    SUBPARTITION_ID, BufferBuilderTestUtils.buildSomeBuffer()))
+                                    SUBPARTITION_ID,
+                                    BufferBuilderTestUtils.buildSomeBuffer(),
+                                    this))
                     .isTrue();
         }
     }
@@ -193,18 +205,25 @@ public class DiskTierProducerAgentTest {
         TestingNettyServiceProducer nettyServiceProducer =
                 new TestingNettyServiceProducer.Builder().build();
         nettyService.registerProducer(PARTITION_ID, nettyServiceProducer);
+        Path dataFilePath = new File(dataFileBasePath + DATA_FILE_SUFFIX).toPath();
 
         return new DiskTierProducerAgent(
                 PARTITION_ID,
                 NUM_SUBPARTITIONS,
                 numBytesPerSegment,
                 BUFFER_SIZE_BYTES,
-                dataFileBasePath,
+                dataFilePath,
                 minReservedDiskSpaceFraction,
                 isBroadcastOnly,
                 partitionFileWriter,
+                new TestingPartitionFileReader.Builder().build(),
                 memoryManager,
                 nettyService,
-                resourceRegistry);
+                resourceRegistry,
+                new BatchShuffleReadBufferPool(1, 1),
+                new ManuallyTriggeredScheduledExecutorService(),
+                0,
+                Duration.ofMinutes(5),
+                0);
     }
 }

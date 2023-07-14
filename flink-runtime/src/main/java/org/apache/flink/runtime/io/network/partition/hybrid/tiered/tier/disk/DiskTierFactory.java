@@ -18,9 +18,12 @@
 
 package org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.disk;
 
+import org.apache.flink.runtime.io.disk.BatchShuffleReadBufferPool;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStoragePartitionId;
-import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.PartitionFileReader;
-import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.PartitionFileWriter;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.ProducerMergedPartitionFile;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.ProducerMergedPartitionFileIndex;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.ProducerMergedPartitionFileReader;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.ProducerMergedPartitionFileWriter;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty.TieredStorageNettyService;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage.TieredStorageConsumerSpec;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.storage.TieredStorageMemoryManager;
@@ -31,7 +34,13 @@ import org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.TierFact
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.TierMasterAgent;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.tier.TierProducerAgent;
 
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
+
+import static org.apache.flink.runtime.io.network.partition.hybrid.tiered.file.ProducerMergedPartitionFile.DATA_FILE_SUFFIX;
 
 /** The implementation of {@link TierFactory} for disk tier. */
 public class DiskTierFactory implements TierFactory {
@@ -60,30 +69,47 @@ public class DiskTierFactory implements TierFactory {
             TieredStoragePartitionId partitionId,
             String dataFileBasePath,
             boolean isBroadcastOnly,
-            PartitionFileWriter partitionFileWriter,
-            PartitionFileReader partitionFileReader,
             TieredStorageMemoryManager storageMemoryManager,
             TieredStorageNettyService nettyService,
-            TieredStorageResourceRegistry resourceRegistry) {
+            TieredStorageResourceRegistry resourceRegistry,
+            BatchShuffleReadBufferPool bufferPool,
+            ScheduledExecutorService ioExecutor,
+            int maxRequestedBuffers,
+            Duration bufferRequestTimeout,
+            int maxBufferReadAhead) {
+        ProducerMergedPartitionFileIndex partitionFileIndex =
+                new ProducerMergedPartitionFileIndex(isBroadcastOnly ? 1 : numSubpartitions);
+        Path dataFilePath = Paths.get(dataFileBasePath + DATA_FILE_SUFFIX);
+        ProducerMergedPartitionFileWriter partitionFileWriter =
+                ProducerMergedPartitionFile.createPartitionFileWriter(
+                        dataFilePath, partitionFileIndex);
+        ProducerMergedPartitionFileReader partitionFileReader =
+                ProducerMergedPartitionFile.createPartitionFileReader(
+                        dataFilePath, partitionFileIndex);
         return new DiskTierProducerAgent(
                 partitionId,
                 numSubpartitions,
                 numBytesPerSegment,
                 bufferSizeBytes,
-                dataFileBasePath,
+                dataFilePath,
                 minReservedDiskSpaceFraction,
                 isBroadcastOnly,
                 partitionFileWriter,
+                partitionFileReader,
                 storageMemoryManager,
                 nettyService,
-                resourceRegistry);
+                resourceRegistry,
+                bufferPool,
+                ioExecutor,
+                maxRequestedBuffers,
+                bufferRequestTimeout,
+                maxBufferReadAhead);
     }
 
     @Override
     public TierConsumerAgent createConsumerAgent(
             List<TieredStorageConsumerSpec> tieredStorageConsumerSpecs,
             TieredStorageNettyService nettyService) {
-        // TODO, create the disk tier consumer agent.
-        return null;
+        return new DiskTierConsumerAgent(tieredStorageConsumerSpecs, nettyService);
     }
 }
